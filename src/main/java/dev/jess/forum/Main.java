@@ -251,7 +251,7 @@ public class Main {
                 }
             });
             if(uses>4) {
-                if(!refill.isAlive()){
+                if(refill.getState() == Thread.State.TERMINATED){
                     refill.start();
                     sendResponse(exchange, "I'm an empty teapot (please wait 30 seconds)", 503);
                 }
@@ -466,7 +466,7 @@ public class Main {
         long lastActionTime = lastActionTimes.getOrDefault(clientIP, 0L);
 
         if (currentTime - lastActionTime < RATE_LIMIT_INTERVAL) {
-            sendResponse(exchange, "429 Too Many Requests");
+            sendResponse(exchange, "<h1>429 Too many requests</h1>", 429);
             return true;
         }
 
@@ -475,8 +475,8 @@ public class Main {
         return false;
     }
 
-    private static void sendResponse(HttpExchange exchange, String response) throws IOException {
-        exchange.sendResponseHeaders(200, response.getBytes().length);
+    private static void sendResponse(HttpExchange exchange, String response, int rcode) throws IOException {
+        exchange.sendResponseHeaders(rcode, response.getBytes().length);
         OutputStream os = exchange.getResponseBody();
         os.write(response.getBytes());
         os.close();

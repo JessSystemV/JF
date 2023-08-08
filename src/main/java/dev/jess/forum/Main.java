@@ -9,19 +9,26 @@ import java.net.InetSocketAddress;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class Main {
     private static List<Post> posts = new ArrayList<>();
 
+    private static int RATE_LIMIT_INTERVAL = 20000; // 20 seconds in milliseconds
+
+    private static final Map<String, Long> lastActionTimes = new ConcurrentHashMap<>();
+
     public static void main(String[] args) throws IOException {
         int port = 80;
         try {
             port = Integer.parseInt(args[0]);
+            RATE_LIMIT_INTERVAL = Integer.parseInt(args[1]);
         }catch (NumberFormatException | ArrayIndexOutOfBoundsException e){}
         HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
         server.createContext("/", new MessageHandler());
+        server.createContext("/teapot", new TeapotHandler());
         server.createContext("/posts/", new IndividualPostHandler()); // Add this line
         server.createContext("/addcomment/", new AddCommentHandler());
         server.setExecutor(null);
@@ -140,6 +147,10 @@ public class Main {
         public void handle(HttpExchange exchange) throws IOException {
             String requestMethod = exchange.getRequestMethod();
 
+            if(rateLimit(exchange)) {
+                return;
+            }
+
             if (requestMethod.equalsIgnoreCase("GET")) {
                 handleGetRequest(exchange);
             } else if (requestMethod.equalsIgnoreCase("POST")) {
@@ -224,6 +235,39 @@ public class Main {
         }
     }
 
+
+    static class TeapotHandler implements HttpHandler {
+        volatile int uses = 0;
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            uses++;
+
+            Thread refill = new Thread(()-> {
+                try {
+                    wait(30000);
+                    uses=0;
+                } catch (InterruptedException e) {
+                    throw new RuntimeException(e);
+                }
+            });
+            if(uses>4) {
+                if(!refill.isAlive()){
+                    refill.start();
+                    sendResponse(exchange, "I'm an empty teapot (please wait 30 seconds)", 503);
+                }
+            }else {
+                sendResponse(exchange, "I'm a teapot", 418);
+            }
+        }
+
+        private void sendResponse(HttpExchange exchange, String response, int rcode) throws IOException {
+            exchange.sendResponseHeaders(rcode, response.getBytes().length);
+            OutputStream os = exchange.getResponseBody();
+            os.write(response.getBytes());
+            os.close();
+        }
+    }
+
     static class Comment {
         public String username;
         public String content;
@@ -238,6 +282,9 @@ public class Main {
     static class IndividualPostHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange exchange) throws IOException {
+            if(rateLimit(exchange)) {
+                return;
+            }
             String requestURI = exchange.getRequestURI().toString();
             String postIdStr = requestURI.substring(requestURI.lastIndexOf('/') + 1);
 
@@ -306,6 +353,9 @@ public class Main {
             String requestURI = exchange.getRequestURI().toString();
             String postIdStr = requestURI.substring(requestURI.lastIndexOf('/') + 1);
 
+            if(rateLimit(exchange)) {
+                return;
+            }
             try {
                 int postId = Integer.parseInt(postIdStr);
 
@@ -363,7 +413,8 @@ public class Main {
     public static String markdown(String markdown) {
         // Convert line breaks
         String html = markdown
-                .replace("(br)", "<br/>&emsp;"); //Line Break!
+                .replace("(br)", "<br/>&emsp;")
+                .replace("\n","<br/>&emsp;"); //Line Break!
         return html;
     }
 
@@ -405,6 +456,30 @@ public class Main {
 
             return requestBody.toString();
         }
+    }
+
+    public static boolean rateLimit(HttpExchange exchange) throws IOException {
+        String clientIP = exchange.getRemoteAddress().getAddress().getHostAddress();
+
+        // Check the last time this IP performed an action
+        long currentTime = System.currentTimeMillis();
+        long lastActionTime = lastActionTimes.getOrDefault(clientIP, 0L);
+
+        if (currentTime - lastActionTime < RATE_LIMIT_INTERVAL) {
+            sendResponse(exchange, "429 Too Many Requests");
+            return true;
+        }
+
+        // Update the last action time for this IP
+        lastActionTimes.put(clientIP, currentTime);
+        return false;
+    }
+
+    private static void sendResponse(HttpExchange exchange, String response) throws IOException {
+        exchange.sendResponseHeaders(200, response.getBytes().length);
+        OutputStream os = exchange.getResponseBody();
+        os.write(response.getBytes());
+        os.close();
     }
 
 
